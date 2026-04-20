@@ -9,6 +9,43 @@ import type {
   ChitGroupWithCreator 
 } from '@/types'
 
+async function ensureUserProfile(supabase: Awaited<ReturnType<typeof createClient>>, user: { id: string; email?: string | null; user_metadata?: any }) {
+  const { data: existing, error: existingError } = await supabase
+    .from('user_profile')
+    .select('user_id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (existingError) {
+    // Most common: schema not created yet (table missing) or RLS.
+    throw new Error(existingError.message)
+  }
+
+  if (existing?.user_id) return
+
+  const email = user.email ?? ''
+  const nameFromMetadata =
+    typeof user.user_metadata?.name === 'string' ? user.user_metadata.name : undefined
+  const nameFromEmail = email.includes('@') ? email.split('@')[0] : undefined
+  const name = nameFromMetadata || nameFromEmail || 'User'
+
+  const { error: upsertError } = await supabase
+    .from('user_profile')
+    .upsert(
+      {
+        user_id: user.id,
+        email,
+        name,
+        created_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    )
+
+  if (upsertError) {
+    throw new Error(upsertError.message)
+  }
+}
+
 // Helper function to get current user
 async function getCurrentUser() {
   const supabase = await createClient()
@@ -34,6 +71,10 @@ export async function createGroup(formData: FormData): Promise<ApiResponse<ChitG
   try {
     const supabase = await createClient()
     const user = await getCurrentUser()
+
+    // Required by DB foreign keys: `chit_groups.created_by` and `group_members.user_id`
+    // both reference `public.user_profile(user_id)`.
+    await ensureUserProfile(supabase, user)
 
     // Validate and extract form data
     const name = formData.get('name') as string
@@ -72,7 +113,22 @@ export async function createGroup(formData: FormData): Promise<ApiResponse<ChitG
 
     if (groupError) {
       console.error('Group creation error:', groupError)
-      return { data: null, error: 'Failed to create group' }
+      const message = groupError.message || 'Failed to create group'
+      if (message.toLowerCase().includes('relation') && message.toLowerCase().includes('does not exist')) {
+        return {
+          data: null,
+          error:
+            'Database tables are missing. Run `supabase/schema.sql` in Supabase SQL Editor, then retry.',
+        }
+      }
+      if (message.toLowerCase().includes('row level security') || message.toLowerCase().includes('violates row-level security')) {
+        return {
+          data: null,
+          error:
+            'Database blocked the insert (RLS). Disable RLS for MVP or add an insert policy for `chit_groups`.',
+        }
+      }
+      return { data: null, error: message }
     }
 
     // Add creator as admin member
@@ -88,7 +144,7 @@ export async function createGroup(formData: FormData): Promise<ApiResponse<ChitG
       console.error('Member insertion error:', memberError)
       // Try to clean up the group if member insertion fails
       await supabase.from('chit_groups').delete().eq('id', groupData.id)
-      return { data: null, error: 'Failed to create group membership' }
+      return { data: null, error: memberError.message || 'Failed to create group membership' }
     }
 
     // Revalidate relevant paths
