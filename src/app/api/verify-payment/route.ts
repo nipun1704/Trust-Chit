@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 
-if (!process.env.RAZORPAY_KEY_SECRET) {
-  throw new Error('Missing Razorpay key secret');
-}
-
 export async function POST(request: Request) {
   try {
+    const keySecret = process.env.RAZORPAY_KEY_SECRET
+    if (!keySecret) {
+      return NextResponse.json(
+        { error: 'Razorpay is not configured on the server' },
+        { status: 500 }
+      )
+    }
+
     const body = await request.json();
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = body;
 
@@ -21,7 +25,7 @@ export async function POST(request: Request) {
     // Create the signature
     const bodyString = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET as string)
+      .createHmac('sha256', keySecret)
       .update(bodyString)
       .digest('hex');
 

@@ -81,6 +81,8 @@ yarn install
 
 Copy `.env.example` to `.env.local` and fill in your Supabase and Razorpay credentials.
 
+If your old Supabase project was paused (and cannot be restored), create a new Supabase project and run the SQL schema in `supabase/schema.sql` to recreate the tables this MVP expects.
+
 ### Running Locally
 
 ```bash

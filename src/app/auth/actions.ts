@@ -41,12 +41,18 @@ export async function signup(formData: FormData) {
     redirect('/signup?message=Email and password are required')
   }
 
+  const siteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined)
+
+  const emailRedirectTo = siteUrl ? `${siteUrl}/auth/confirm` : undefined
+
   // First, create the auth user
   const { data: authData, error: signupError } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/confirm`,
+      ...(emailRedirectTo ? { emailRedirectTo } : {}),
       data: {
         name: name,
       }
@@ -60,7 +66,11 @@ export async function signup(formData: FormData) {
     } else if (signupError.message.includes('Password')) {
       redirect('/signup?message=Password is too short')
     } else {
-      redirect('/signup?message=Error creating account')
+      const msg =
+        process.env.NODE_ENV === 'development'
+          ? encodeURIComponent(signupError.message)
+          : 'Error%20creating%20account'
+      redirect(`/signup?message=${msg}`)
     }
   }
 
@@ -80,6 +90,13 @@ export async function signup(formData: FormData) {
       // We could handle this more gracefully, but for now we'll continue
       // since the auth user is created and they can try setting up their profile later
     }
+  }
+
+  // If email confirmation is disabled in Supabase, a session is returned and the user
+  // can continue immediately.
+  if (authData.session) {
+    revalidatePath('/', 'layout')
+    redirect('/dashboard')
   }
 
   redirect('/login?message=Check your email to confirm your account')
