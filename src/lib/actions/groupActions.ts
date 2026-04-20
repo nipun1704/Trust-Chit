@@ -9,7 +9,37 @@ import type {
   ChitGroupWithCreator 
 } from '@/types'
 
-async function ensureUserProfile(supabase: Awaited<ReturnType<typeof createClient>>, user: { id: string; email?: string | null; user_metadata?: any }) {
+function toActionableDbError(message: string) {
+  const msg = message || 'Database error'
+  const lower = msg.toLowerCase()
+
+  if (lower.includes('does not exist') || lower.includes('relation') || lower.includes('42p01')) {
+    return 'Database tables are missing. In Supabase: SQL Editor → run `supabase/schema.sql` → retry.'
+  }
+
+  if (lower.includes('row level security') || lower.includes('row-level security') || lower.includes('42501')) {
+    return 'Database blocked the action (RLS). For MVP: disable RLS on tables or add insert/select policies.'
+  }
+
+  if (lower.includes('violates foreign key constraint') || lower.includes('23503')) {
+    return 'Database rejected the insert (foreign key). Ensure `user_profile` exists for your user and schema matches `supabase/schema.sql`.'
+  }
+
+  if (lower.includes('duplicate key value') || lower.includes('23505')) {
+    return 'Duplicate data blocked the write. If this persists, clear test data or adjust unique constraints in Supabase.'
+  }
+
+  if (lower.includes('permission denied')) {
+    return 'Database permissions blocked the action. Ensure grants exist for `anon`/`authenticated` (see `supabase/schema.sql`).'
+  }
+
+  return msg
+}
+
+async function ensureUserProfile(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  user: { id: string; email?: string | null; user_metadata?: any }
+) {
   const { data: existing, error: existingError } = await supabase
     .from('user_profile')
     .select('user_id')
@@ -17,13 +47,12 @@ async function ensureUserProfile(supabase: Awaited<ReturnType<typeof createClien
     .maybeSingle()
 
   if (existingError) {
-    // Most common: schema not created yet (table missing) or RLS.
-    throw new Error(existingError.message)
+    throw new Error(toActionableDbError(existingError.message))
   }
 
   if (existing?.user_id) return
 
-  const email = user.email ?? ''
+  const email = user.email?.trim() || `${user.id}@user.local`
   const nameFromMetadata =
     typeof user.user_metadata?.name === 'string' ? user.user_metadata.name : undefined
   const nameFromEmail = email.includes('@') ? email.split('@')[0] : undefined
@@ -42,7 +71,7 @@ async function ensureUserProfile(supabase: Awaited<ReturnType<typeof createClien
     )
 
   if (upsertError) {
-    throw new Error(upsertError.message)
+    throw new Error(toActionableDbError(upsertError.message))
   }
 }
 
@@ -113,22 +142,7 @@ export async function createGroup(formData: FormData): Promise<ApiResponse<ChitG
 
     if (groupError) {
       console.error('Group creation error:', groupError)
-      const message = groupError.message || 'Failed to create group'
-      if (message.toLowerCase().includes('relation') && message.toLowerCase().includes('does not exist')) {
-        return {
-          data: null,
-          error:
-            'Database tables are missing. Run `supabase/schema.sql` in Supabase SQL Editor, then retry.',
-        }
-      }
-      if (message.toLowerCase().includes('row level security') || message.toLowerCase().includes('violates row-level security')) {
-        return {
-          data: null,
-          error:
-            'Database blocked the insert (RLS). Disable RLS for MVP or add an insert policy for `chit_groups`.',
-        }
-      }
-      return { data: null, error: message }
+      return { data: null, error: toActionableDbError(groupError.message || 'Failed to create group') }
     }
 
     // Add creator as admin member
@@ -144,7 +158,10 @@ export async function createGroup(formData: FormData): Promise<ApiResponse<ChitG
       console.error('Member insertion error:', memberError)
       // Try to clean up the group if member insertion fails
       await supabase.from('chit_groups').delete().eq('id', groupData.id)
-      return { data: null, error: memberError.message || 'Failed to create group membership' }
+      return {
+        data: null,
+        error: toActionableDbError(memberError.message || 'Failed to create group membership'),
+      }
     }
 
     // Revalidate relevant paths
