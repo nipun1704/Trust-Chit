@@ -14,6 +14,11 @@ export async function inviteMemberToGroup(
 ): Promise<ActionResponse<{ invitationId: string }>> {
   try {
     const supabase = await createClient();
+
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      return { success: false, error: 'Email is required' };
+    }
     
     // Check if user is authenticated
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -41,11 +46,20 @@ export async function inviteMemberToGroup(
     const { data: targetUser, error: userError } = await supabase
       .from('user_profile')
       .select('user_id')
-      .eq('email', email)
-      .single();
+      .ilike('email', normalizedEmail)
+      .maybeSingle();
 
-    if (userError || !targetUser) {
-      return { success: false, error: 'User with this email does not exist' };
+    if (userError) {
+      console.error('User lookup error:', userError);
+      return { success: false, error: userError.message || 'Failed to lookup user' };
+    }
+
+    if (!targetUser) {
+      return {
+        success: false,
+        error:
+          'User with this email does not exist (they must sign up and log in once so their profile is created).',
+      };
     }
 
     // Check if user is already a member

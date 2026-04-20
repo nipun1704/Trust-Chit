@@ -25,6 +25,39 @@ export async function login(formData: FormData) {
     redirect('/login?message=Invalid login credentials')
   }
 
+  // Ensure user_profile exists so other features (invites, groups) work.
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (user) {
+      const normalizedEmail = (user.email ?? '').trim().toLowerCase() || `${user.id}@user.local`
+      const nameFromMetadata =
+        typeof (user.user_metadata as any)?.name === 'string'
+          ? (user.user_metadata as any).name
+          : undefined
+      const nameFromEmail = normalizedEmail.includes('@')
+        ? normalizedEmail.split('@')[0]
+        : undefined
+
+      await supabase
+        .from('user_profile')
+        .upsert(
+          {
+            user_id: user.id,
+            email: normalizedEmail,
+            name: nameFromMetadata || nameFromEmail || 'User',
+            created_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' }
+        )
+    }
+  } catch (e) {
+    // Don't block login if profile upsert fails; other actions will surface errors.
+    console.warn('user_profile upsert on login failed:', e)
+  }
+
   revalidatePath('/', 'layout')
   redirect('/dashboard')
 }
@@ -33,9 +66,11 @@ export async function signup(formData: FormData) {
   const supabase = await createClient()
 
   // Validate inputs
-  const email = formData.get('email') as string
+  const email = (formData.get('email') as string) || ''
   const password = formData.get('password') as string
   const name = formData.get('name') as string
+
+  const normalizedEmail = email.trim().toLowerCase()
 
   if (!email || !password) {
     redirect('/signup?message=Email and password are required')
@@ -49,7 +84,7 @@ export async function signup(formData: FormData) {
 
   // First, create the auth user
   const { data: authData, error: signupError } = await supabase.auth.signUp({
-    email,
+    email: normalizedEmail,
     password,
     options: {
       ...(emailRedirectTo ? { emailRedirectTo } : {}),
@@ -81,7 +116,7 @@ export async function signup(formData: FormData) {
       .insert({
         user_id: authData.user.id,
         name: name,
-        email: email,
+        email: normalizedEmail,
         created_at: new Date().toISOString()
       })
 
